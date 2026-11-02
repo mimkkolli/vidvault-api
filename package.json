@@ -1,9 +1,14 @@
-if (data.success && data.downloadUrl) {
-  // Use proxy to avoid Forbidden
-  const proxyUrl = `https://vidvault-api.onrender.com/proxy-download?url=${encodeURIComponent(data.downloadUrl)}`;
-  
-  downloadBtn.href = proxyUrl;
-  downloadBtn.target = "_blank";
-  downloadBtn.setAttribute("download", `${displayTitle}.mkv`);
-  downloadBtnText.innerText = "Download Video";
+{
+  "name": "vidvault-api",
+  "version": "1.0.0",
+  "description": "VidVault download extraction API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0"
+  }
 }
