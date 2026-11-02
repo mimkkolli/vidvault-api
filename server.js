@@ -9,11 +9,23 @@ app.get('/', (req, res) => {
   res.send('Moboxed Extraction Server Active!');
 });
 
+// Simple cache
+const linkCache = new Map();
+const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
 app.get('/api/get-download', async (req, res) => {
   const { type = 'movie', id, season = 1, ep = 1 } = req.query;
 
   if (!id) {
     return res.status(400).json({ error: "Missing media ID parameter." });
+  }
+
+  const cacheKey = `\( {type}_ \){id}_\( {season}_ \){ep}`;
+  const cached = linkCache.get(cacheKey);
+
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+    console.log('Serving from cache:', cacheKey);
+    return res.json(cached.data);
   }
 
   try {
@@ -28,10 +40,7 @@ app.get('/api/get-download', async (req, res) => {
 
     const token = tokenRes.data?.t;
     if (!token) {
-      return res.status(502).json({ 
-        error: 'Failed to get token',
-        tokenResponse: tokenRes.data 
-      });
+      return res.status(502).json({ error: 'Failed to get token from VidVault' });
     }
 
     // 2. Request download sources
@@ -62,21 +71,62 @@ app.get('/api/get-download', async (req, res) => {
       }
     );
 
-    // Return the FULL raw response for inspection
-    return res.json({
-      success: true,
-      message: "Raw response from VidVault",
-      token: token,
-      payloadSent: payload,
-      fullResponse: downloadRes.data
+    const data = downloadRes.data;
+
+    let bestUrl = null;
+    let isDirectFile = false;
+    let quality = null;
+    let size = null;
+
+    // New structure (mkvV2Data)
+    if (data?.mkvV2Data?.url) {
+      bestUrl = data.mkvV2Data.url;
+      isDirectFile = true;
+      quality = data.mkvV2Data.quality || null;
+      size = data.mkvV2Data.size || null;
+    }
+    // Fallback to old mp4 structure (just in case)
+    else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
+      const downloads = data.mp4Data.downloadInfo.data.downloads;
+      const best = downloads[downloads.length - 1];
+      bestUrl = best.url;
+      isDirectFile = true;
+      quality = best.resolution ? best.resolution + 'p' : null;
+      size = best.size || null;
+    }
+    // Fallback to old mkv structure
+    else if (data?.mkvData?.files?.length > 0) {
+      bestUrl = data.mkvData.files[0].url;
+      isDirectFile = true;
+    }
+
+    const responseData = {
+      success: !!bestUrl,
+      downloadUrl: bestUrl,
+      isDirectFile,
+      quality,
+      size,
+      allLinks: {
+        mkvV2: data?.mkvV2Data || null,
+        mp4: data?.mp4Data || null,
+        mkv: data?.mkvData || null
+      }
+    };
+
+    // Save to cache
+    linkCache.set(cacheKey, {
+      data: responseData,
+      timestamp: Date.now()
     });
+
+    return res.json(responseData);
 
   } catch (error) {
     console.error('Extraction error:', error.message);
     return res.status(500).json({
       success: false,
-      error: error.message,
-      details: error.response ? error.response.data : null
+      error: 'Failed to extract download links',
+      details: error.message
     });
   }
 });
