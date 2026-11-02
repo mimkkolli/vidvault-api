@@ -30,10 +30,10 @@ app.get('/api/get-download', async (req, res) => {
 
   try {
     // 1. Get token
-    const tokenRes = await axios.get('https://vidvault.ru/api/get-token', {
+    const tokenRes = await axios.get('https://vidvault.to/api/get-token', {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://vidvault.ru/'
+        'Referer': 'https://vidvault.to/'
       },
       timeout: 15000
     });
@@ -56,15 +56,15 @@ app.get('/api/get-download', async (req, res) => {
     }
 
     const downloadRes = await axios.post(
-      'https://vidvault.ru/api/download-proxy',
+      'https://vidvault.to/api/download-proxy',
       payload,
       {
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Referer': type === 'tv'
-            ? `https://vidvault.ru/tv/\( {id}/ \){season}/${ep}`
-            : `https://vidvault.ru/movie/${id}`,
+            ? `https://vidvault.to/tv/\( {id}/ \){season}/${ep}`
+            : `https://vidvault.to/movie/${id}`,
           'x-request-token': token
         },
         timeout: 20000
