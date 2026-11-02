@@ -118,9 +118,10 @@ app.get('/api/get-download', async (req, res) => {
   }
 });
 
-// Proxy route to bypass Forbidden
+// Improved Proxy route with proper filename
 app.get('/proxy-download', async (req, res) => {
   const fileUrl = req.query.url;
+  const filename = req.query.filename || 'movie.mkv';
 
   if (!fileUrl) {
     return res.status(400).send('Missing url parameter');
@@ -140,14 +141,14 @@ app.get('/proxy-download', async (req, res) => {
       maxRedirects: 5
     });
 
-    if (response.headers['content-type']) {
-      res.setHeader('Content-Type', response.headers['content-type']);
-    }
+    // Set proper headers so the file has a nice name
+    res.setHeader('Content-Type', response.headers['content-type'] || 'video/x-matroska');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    
     if (response.headers['content-length']) {
       res.setHeader('Content-Length', response.headers['content-length']);
     }
 
-    res.setHeader('Content-Disposition', 'attachment');
     response.data.pipe(res);
 
   } catch (err) {
