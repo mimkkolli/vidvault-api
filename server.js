@@ -11,7 +11,7 @@ app.get('/', (req, res) => {
 
 // Simple cache
 const linkCache = new Map();
-const CACHE_TTL = 15 * 60 * 1000;
+const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
 app.get('/api/get-download', async (req, res) => {
   const { type = 'movie', id, season = 1, ep = 1 } = req.query;
@@ -29,19 +29,26 @@ app.get('/api/get-download', async (req, res) => {
   }
 
   try {
+    // Step 1: Get token
     const tokenRes = await axios.get('https://vidvault.to/api/get-token', {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://vidvault.to/'
       },
       timeout: 15000
     });
 
-    const token = tokenRes.data?.t;
+    const token = tokenRes.data?.t || tokenRes.data?.token;
     if (!token) {
-      return res.status(502).json({ error: 'Failed to get token from VidVault' });
+      console.error('No token received:', tokenRes.data);
+      return res.status(502).json({ 
+        success: false, 
+        error: 'Failed to get token from VidVault',
+        details: tokenRes.data 
+      });
     }
 
+    // Step 2: Prepare payload
     const payload = {
       e: id,
       type: type === 'tv' ? 'tv' : 'movie',
@@ -53,13 +60,14 @@ app.get('/api/get-download', async (req, res) => {
       payload.episode = Number(ep);
     }
 
+    // Step 3: Request download links
     const downloadRes = await axios.post(
       'https://vidvault.to/api/download-proxy',
       payload,
       {
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Referer': type === 'tv'
             ? `https://vidvault.to/tv/\( {id}/ \){season}/${ep}`
             : `https://vidvault.to/movie/${id}`,
@@ -70,26 +78,38 @@ app.get('/api/get-download', async (req, res) => {
     );
 
     const data = downloadRes.data;
+    console.log('VidVault response keys:', Object.keys(data || {}));
 
     let bestUrl = null;
     let isDirectFile = false;
     let quality = null;
     let size = null;
 
+    // Try different possible response structures
     if (data?.mkvV2Data?.url) {
       bestUrl = data.mkvV2Data.url;
       isDirectFile = true;
       quality = data.mkvV2Data.quality || null;
       size = data.mkvV2Data.size || null;
-    } else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
+    } 
+    else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
       const downloads = data.mp4Data.downloadInfo.data.downloads;
       const best = downloads[downloads.length - 1];
       bestUrl = best.url;
       isDirectFile = true;
       quality = best.resolution ? best.resolution + 'p' : null;
       size = best.size || null;
-    } else if (data?.mkvData?.files?.length > 0) {
+    } 
+    else if (data?.mkvData?.files?.length > 0) {
       bestUrl = data.mkvData.files[0].url;
+      isDirectFile = true;
+    }
+    else if (data?.url) {
+      bestUrl = data.url;
+      isDirectFile = true;
+    }
+    else if (data?.downloadUrl) {
+      bestUrl = data.downloadUrl;
       isDirectFile = true;
     }
 
@@ -98,18 +118,25 @@ app.get('/api/get-download', async (req, res) => {
       downloadUrl: bestUrl,
       isDirectFile,
       quality,
-      size
+      size,
+      raw: process.env.NODE_ENV === 'development' ? data : undefined
     };
 
-    linkCache.set(cacheKey, {
-      data: responseData,
-      timestamp: Date.now()
-    });
+    if (bestUrl) {
+      linkCache.set(cacheKey, {
+        data: responseData,
+        timestamp: Date.now()
+      });
+    }
 
     return res.json(responseData);
 
   } catch (error) {
     console.error('Extraction error:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+    }
     return res.status(500).json({
       success: false,
       error: 'Failed to extract download links',
@@ -118,7 +145,7 @@ app.get('/api/get-download', async (req, res) => {
   }
 });
 
-// Improved Proxy route with proper filename
+// Proxy route
 app.get('/proxy-download', async (req, res) => {
   const fileUrl = req.query.url;
   const filename = req.query.filename || 'movie.mkv';
@@ -141,7 +168,6 @@ app.get('/proxy-download', async (req, res) => {
       maxRedirects: 5
     });
 
-    // Set proper headers so the file has a nice name
     res.setHeader('Content-Type', response.headers['content-type'] || 'video/x-matroska');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     
