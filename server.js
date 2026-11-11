@@ -1,5 +1,3 @@
-//Server.js script here
-
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -11,10 +9,6 @@ app.get('/', (req, res) => {
   res.send('Moboxed Extraction Server Active!');
 });
 
-// Simple cache
-const linkCache = new Map();
-const CACHE_TTL = 15 * 60 * 1000;
-
 app.get('/api/get-download', async (req, res) => {
   const { type = 'movie', id, season = 1, ep = 1 } = req.query;
 
@@ -22,30 +16,37 @@ app.get('/api/get-download', async (req, res) => {
     return res.status(400).json({ error: "Missing media ID parameter." });
   }
 
-  const cacheKey = `\( {type}_ \){id}_\( {season}_ \){ep}`;
-  const cached = linkCache.get(cacheKey);
-
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-    console.log('Serving from cache:', cacheKey);
-    return res.json(cached.data);
-  }
-
   try {
+    // Step 1: Get token with stronger browser headers
     const tokenRes = await axios.get('https://vidvault.to/api/get-token', {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://vidvault.to/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://vidvault.to/',
+        'Origin': 'https://vidvault.to',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
       },
       timeout: 15000
     });
 
-    const token = tokenRes.data?.t;
+    const token = tokenRes.data?.t || tokenRes.data?.token;
+    
     if (!token) {
-      return res.status(502).json({ error: 'Failed to get token from VidVault' });
+      return res.json({
+        success: false,
+        error: 'Failed to get token',
+        tokenResponse: tokenRes.data
+      });
     }
 
+    // Step 2: Prepare payload
     const payload = {
-      e: id,
+      e: String(id),
       type: type === 'tv' ? 'tv' : 'movie',
       tmdbId: Number(id)
     };
@@ -55,17 +56,28 @@ app.get('/api/get-download', async (req, res) => {
       payload.episode = Number(ep);
     }
 
+    const refererUrl = type === 'tv'
+      ? `https://vidvault.to/tv/\( {id}/ \){season}/${ep}`
+      : `https://vidvault.to/movie/${id}`;
+
+    // Step 3: Request download links with stronger headers
     const downloadRes = await axios.post(
       'https://vidvault.to/api/download-proxy',
       payload,
       {
         headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
           'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': type === 'tv'
-            ? `https://vidvault.to/tv/\( {id}/ \){season}/${ep}`
-            : `https://vidvault.to/movie/${id}`,
-          'x-request-token': token
+          'Referer': refererUrl,
+          'Origin': 'https://vidvault.to',
+          'x-request-token': token,
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         },
         timeout: 20000
       }
@@ -78,84 +90,58 @@ app.get('/api/get-download', async (req, res) => {
     let quality = null;
     let size = null;
 
+    // Try all known response structures
     if (data?.mkvV2Data?.url) {
       bestUrl = data.mkvV2Data.url;
       isDirectFile = true;
       quality = data.mkvV2Data.quality || null;
       size = data.mkvV2Data.size || null;
-    } else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
+    } 
+    else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
       const downloads = data.mp4Data.downloadInfo.data.downloads;
       const best = downloads[downloads.length - 1];
       bestUrl = best.url;
       isDirectFile = true;
       quality = best.resolution ? best.resolution + 'p' : null;
       size = best.size || null;
-    } else if (data?.mkvData?.files?.length > 0) {
+    } 
+    else if (data?.mkvData?.files?.length > 0) {
       bestUrl = data.mkvData.files[0].url;
       isDirectFile = true;
     }
+    else if (data?.url) {
+      bestUrl = data.url;
+      isDirectFile = true;
+    }
+    else if (data?.downloadUrl) {
+      bestUrl = data.downloadUrl;
+      isDirectFile = true;
+    }
 
-    const responseData = {
+    // Temporary debug response (we will clean it later)
+    return res.json({
       success: !!bestUrl,
       downloadUrl: bestUrl,
       isDirectFile,
       quality,
-      size
-    };
-
-    linkCache.set(cacheKey, {
-      data: responseData,
-      timestamp: Date.now()
+      size,
+      debug: {
+        hasMp4: !!data?.mp4Data,
+        hasMkv: !!data?.mkvData,
+        hasMkvV2: !!data?.mkvV2Data,
+        fullKeys: Object.keys(data || {}),
+        fullResponse: data
+      }
     });
-
-    return res.json(responseData);
 
   } catch (error) {
     console.error('Extraction error:', error.message);
-    return res.status(500).json({
+    return res.json({
       success: false,
-      error: 'Failed to extract download links',
-      details: error.message
+      error: error.message,
+      status: error.response?.status || null,
+      responseData: error.response?.data || null
     });
-  }
-});
-
-// Improved Proxy route with proper filename
-app.get('/proxy-download', async (req, res) => {
-  const fileUrl = req.query.url;
-  const filename = req.query.filename || 'movie.mkv';
-
-  if (!fileUrl) {
-    return res.status(400).send('Missing url parameter');
-  }
-
-  try {
-    const response = await axios({
-      method: 'get',
-      url: fileUrl,
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://vidvault.to/',
-        'Origin': 'https://vidvault.to'
-      },
-      timeout: 60000,
-      maxRedirects: 5
-    });
-
-    // Set proper headers so the file has a nice name
-    res.setHeader('Content-Type', response.headers['content-type'] || 'video/x-matroska');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    
-    if (response.headers['content-length']) {
-      res.setHeader('Content-Length', response.headers['content-length']);
-    }
-
-    response.data.pipe(res);
-
-  } catch (err) {
-    console.error('Proxy download error:', err.message);
-    res.status(502).send('Failed to fetch the file. The link may have expired or is blocked.');
   }
 });
 
