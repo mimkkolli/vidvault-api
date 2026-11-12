@@ -12,6 +12,9 @@ app.get('/', (req, res) => {
 app.get('/api/get-download', async (req, res) => {
   const { type = 'movie', id, season = 1, ep = 1 } = req.query;
 
+  // Log incoming parameters to verify what the frontend is passing
+  console.log("INCOMING REQUEST QUERY:", { type, id, season, ep });
+
   if (!id) {
     return res.status(400).json({ error: "Missing media ID parameter." });
   }
@@ -48,7 +51,7 @@ app.get('/api/get-download', async (req, res) => {
     const payload = {
       e: String(id),
       type: type === 'tv' ? 'tv' : 'movie',
-      tmdbId: Number(id)
+      tmdbId: Number(id) || id
     };
 
     if (type === 'tv') {
