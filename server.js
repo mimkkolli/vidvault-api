@@ -17,19 +17,19 @@ app.get('/api/get-download', async (req, res) => {
   }
 
   try {
-    // Step 1: Get token with stronger browser headers
+    // Fixed template string for the referer URL
+    const refererUrl = type === 'tv'
+      ? `https://vidvault.to/tv/${id}/${season}/${ep}`
+      : `https://vidvault.to/movie/${id}`;
+
+    // Step 1: Get token with browser headers
     const tokenRes = await axios.get('https://vidvault.to/api/get-token', {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://vidvault.to/',
-        'Origin': 'https://vidvault.to',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+        'Origin': 'https://vidvault.to'
       },
       timeout: 15000
     });
@@ -56,11 +56,7 @@ app.get('/api/get-download', async (req, res) => {
       payload.episode = Number(ep);
     }
 
-    const refererUrl = type === 'tv'
-      ? `https://vidvault.to/tv/\( {id}/ \){season}/${ep}`
-      : `https://vidvault.to/movie/${id}`;
-
-    // Step 3: Request download links with stronger headers
+    // Step 3: Request download links via proxy API
     const downloadRes = await axios.post(
       'https://vidvault.to/api/download-proxy',
       payload,
@@ -72,12 +68,7 @@ app.get('/api/get-download', async (req, res) => {
           'Content-Type': 'application/json',
           'Referer': refererUrl,
           'Origin': 'https://vidvault.to',
-          'x-request-token': token,
-          'Sec-Fetch-Dest': 'empty',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'same-origin',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
+          'x-request-token': token
         },
         timeout: 20000
       }
@@ -90,7 +81,7 @@ app.get('/api/get-download', async (req, res) => {
     let quality = null;
     let size = null;
 
-    // Try all known response structures
+    // Check all known response structures
     if (data?.mkvV2Data?.url) {
       bestUrl = data.mkvV2Data.url;
       isDirectFile = true;
@@ -118,7 +109,6 @@ app.get('/api/get-download', async (req, res) => {
       isDirectFile = true;
     }
 
-    // Temporary debug response (we will clean it later)
     return res.json({
       success: !!bestUrl,
       downloadUrl: bestUrl,
@@ -126,17 +116,13 @@ app.get('/api/get-download', async (req, res) => {
       quality,
       size,
       debug: {
-        hasMp4: !!data?.mp4Data,
-        hasMkv: !!data?.mkvData,
-        hasMkvV2: !!data?.mkvV2Data,
-        fullKeys: Object.keys(data || {}),
         fullResponse: data
       }
     });
 
   } catch (error) {
-    console.error('Extraction error:', error.message);
-    return res.json({
+    console.error('Extraction error details:', error.response?.status, error.response?.data || error.message);
+    return res.status(500).json({
       success: false,
       error: error.message,
       status: error.response?.status || null,
