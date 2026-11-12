@@ -76,6 +76,9 @@ app.get('/api/get-download', async (req, res) => {
 
     const data = downloadRes.data;
 
+    // Log raw data directly to Render console logs for debugging
+    console.log("RAW VIDVAULT RESPONSE:", JSON.stringify(data));
+
     let bestUrl = null;
     let isDirectFile = false;
     let quality = null;
