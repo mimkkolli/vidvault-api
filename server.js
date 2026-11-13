@@ -20,7 +20,6 @@ app.get('/api/get-download', async (req, res) => {
 
   let browser = null;
   try {
-    // Launch headless browser optimized for cloud environments like Render
     browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -32,46 +31,68 @@ app.get('/api/get-download', async (req, res) => {
     });
 
     const page = await browser.newPage();
-    
-    // Set a realistic user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // Construct target URL based on media type
+    // Step 1: Go to the main site to establish session/cookies
+    await page.goto('https://vidvault.to/', { waitUntil: 'networkidle2', timeout: 30000 });
+
     const targetUrl = type === 'tv'
       ? `https://vidvault.to/tv/${id}/${season}/${ep}`
       : `https://vidvault.to/movie/${id}`;
 
-    console.log(`Navigating to: ${targetUrl}`);
-
-    // Intercept API responses from vidvault.to
-    let capturedData = null;
-    page.on('response', async (response) => {
-      const url = response.url();
-      if (url.includes('/api/download-proxy') || url.includes('/api/get-token')) {
-        try {
-          const json = await response.json();
-          if (json && (json.mp4Data || json.mkvData || json.mkvV2Data || json.url || json.downloadUrl)) {
-            capturedData = json;
-          }
-        } catch (e) {
-          // Ignore non-json responses
-        }
-      }
-    });
-
-    // Go to the target page and wait for network activity to settle
+    console.log(`Navigating to target: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Give it a brief moment for async API requests to complete
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Step 2: Execute extraction script directly inside the browser environment
+    const capturedData = await page.evaluate(async (mediaId, mediaType, mediaSeason, mediaEp) => {
+      try {
+        // Fetch token using browser fetch (shares cookies/session automatically)
+        const tokenRes = await fetch('https://vidvault.to/api/get-token');
+        const tokenJson = await tokenRes.json();
+        const token = tokenJson?.t || tokenJson?.token;
+
+        if (!token) return { error: "Failed to acquire browser token" };
+
+        const payload = {
+          e: String(mediaId),
+          type: mediaType === 'tv' ? 'tv' : 'movie',
+          tmdbId: Number(mediaId)
+        };
+
+        if (mediaType === 'tv') {
+          payload.season = Number(mediaSeason);
+          payload.episode = Number(mediaEp);
+        }
+
+        const refererUrl = mediaType === 'tv'
+          ? `https://vidvault.to/tv/${mediaId}/${mediaSeason}/${mediaEp}`
+          : `https://vidvault.to/movie/${mediaId}`;
+
+        // Call download proxy from inside the page context
+        const proxyRes = await fetch('https://vidvault.to/api/download-proxy', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Referer': refererUrl,
+            'Origin': 'https://vidvault.to',
+            'x-request-token': token
+          },
+          body: JSON.stringify(payload)
+        });
+
+        return await proxyRes.json();
+      } catch (err) {
+        return { error: err.message };
+      }
+    }, id, type, season, ep);
 
     await browser.close();
     browser = null;
 
-    if (!capturedData) {
+    if (!capturedData || capturedData.error) {
       return res.json({
         success: false,
-        error: 'Failed to intercept valid media payload via browser automation.',
+        error: capturedData?.error || 'Failed to fetch payload from browser context.',
         downloadUrl: null
       });
     }
@@ -81,7 +102,6 @@ app.get('/api/get-download', async (req, res) => {
     let quality = null;
     let size = null;
 
-    // Parse the captured data structure
     if (capturedData?.mkvV2Data?.url) {
       bestUrl = capturedData.mkvV2Data.url;
       isDirectFile = true;
