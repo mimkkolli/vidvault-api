@@ -1,117 +1,111 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 
 const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-  res.send('Moboxed Extraction Server Active!');
+  res.send('Moboxed Puppeteer Extraction Server Active!');
 });
 
 app.get('/api/get-download', async (req, res) => {
   const { type = 'movie', id, season = 1, ep = 1 } = req.query;
 
-  // Log incoming parameters to verify what the frontend is passing
   console.log("INCOMING REQUEST QUERY:", { type, id, season, ep });
 
   if (!id) {
     return res.status(400).json({ error: "Missing media ID parameter." });
   }
 
+  let browser = null;
   try {
-    // Fixed template string for the referer URL
-    const refererUrl = type === 'tv'
+    // Launch headless browser optimized for cloud environments like Render
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+
+    const page = await browser.newPage();
+    
+    // Set a realistic user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+
+    // Construct target URL based on media type
+    const targetUrl = type === 'tv'
       ? `https://vidvault.to/tv/${id}/${season}/${ep}`
       : `https://vidvault.to/movie/${id}`;
 
-    // Step 1: Get token with browser headers
-    const tokenRes = await axios.get('https://vidvault.to/api/get-token', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://vidvault.to/',
-        'Origin': 'https://vidvault.to'
-      },
-      timeout: 15000
+    console.log(`Navigating to: ${targetUrl}`);
+
+    // Intercept API responses from vidvault.to
+    let capturedData = null;
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (url.includes('/api/download-proxy') || url.includes('/api/get-token')) {
+        try {
+          const json = await response.json();
+          if (json && (json.mp4Data || json.mkvData || json.mkvV2Data || json.url || json.downloadUrl)) {
+            capturedData = json;
+          }
+        } catch (e) {
+          // Ignore non-json responses
+        }
+      }
     });
 
-    const token = tokenRes.data?.t || tokenRes.data?.token;
-    
-    if (!token) {
+    // Go to the target page and wait for network activity to settle
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+    // Give it a brief moment for async API requests to complete
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    await browser.close();
+    browser = null;
+
+    if (!capturedData) {
       return res.json({
         success: false,
-        error: 'Failed to get token',
-        tokenResponse: tokenRes.data
+        error: 'Failed to intercept valid media payload via browser automation.',
+        downloadUrl: null
       });
     }
-
-    // Step 2: Prepare payload
-    const payload = {
-      e: String(id),
-      type: type === 'tv' ? 'tv' : 'movie',
-      tmdbId: Number(id) || id
-    };
-
-    if (type === 'tv') {
-      payload.season = Number(season);
-      payload.episode = Number(ep);
-    }
-
-    // Step 3: Request download links via proxy API
-    const downloadRes = await axios.post(
-      'https://vidvault.to/api/download-proxy',
-      payload,
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Content-Type': 'application/json',
-          'Referer': refererUrl,
-          'Origin': 'https://vidvault.to',
-          'x-request-token': token
-        },
-        timeout: 20000
-      }
-    );
-
-    const data = downloadRes.data;
-
-    // Log raw data directly to Render console logs for debugging
-    console.log("RAW VIDVAULT RESPONSE:", JSON.stringify(data));
 
     let bestUrl = null;
     let isDirectFile = false;
     let quality = null;
     let size = null;
 
-    // Check all known response structures
-    if (data?.mkvV2Data?.url) {
-      bestUrl = data.mkvV2Data.url;
+    // Parse the captured data structure
+    if (capturedData?.mkvV2Data?.url) {
+      bestUrl = capturedData.mkvV2Data.url;
       isDirectFile = true;
-      quality = data.mkvV2Data.quality || null;
-      size = data.mkvV2Data.size || null;
+      quality = capturedData.mkvV2Data.quality || null;
+      size = capturedData.mkvV2Data.size || null;
     } 
-    else if (data?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
-      const downloads = data.mp4Data.downloadInfo.data.downloads;
+    else if (capturedData?.mp4Data?.downloadInfo?.data?.downloads?.length > 0) {
+      const downloads = capturedData.mp4Data.downloadInfo.data.downloads;
       const best = downloads[downloads.length - 1];
       bestUrl = best.url;
       isDirectFile = true;
       quality = best.resolution ? best.resolution + 'p' : null;
       size = best.size || null;
     } 
-    else if (data?.mkvData?.files?.length > 0) {
-      bestUrl = data.mkvData.files[0].url;
+    else if (capturedData?.mkvData?.files?.length > 0) {
+      bestUrl = capturedData.mkvData.files[0].url;
       isDirectFile = true;
     }
-    else if (data?.url) {
-      bestUrl = data.url;
+    else if (capturedData?.url) {
+      bestUrl = capturedData.url;
       isDirectFile = true;
     }
-    else if (data?.downloadUrl) {
-      bestUrl = data.downloadUrl;
+    else if (capturedData?.downloadUrl) {
+      bestUrl = capturedData.downloadUrl;
       isDirectFile = true;
     }
 
@@ -122,22 +116,23 @@ app.get('/api/get-download', async (req, res) => {
       quality,
       size,
       debug: {
-        fullResponse: data
+        fullResponse: capturedData
       }
     });
 
   } catch (error) {
-    console.error('Extraction error details:', error.response?.status, error.response?.data || error.message);
+    if (browser) {
+      await browser.close();
+    }
+    console.error('Puppeteer extraction error:', error.message);
     return res.status(500).json({
       success: false,
-      error: error.message,
-      status: error.response?.status || null,
-      responseData: error.response?.data || null
+      error: error.message
     });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Extraction server active on port ${PORT}`);
+  console.log(`Puppeteer extraction server active on port ${PORT}`);
 });
