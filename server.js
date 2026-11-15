@@ -10,7 +10,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/get-download', async (req, res) => {
-  const { type = 'movie', id, season = 1, ep = 1 } = req.query;
+  const { type = 'movie', id } = req.query;
+  // Only grab season and ep if it's actually a tv show
+  const season = type === 'tv' ? (req.query.season || 1) : null;
+  const ep = type === 'tv' ? (req.query.ep || 1) : null;
 
   console.log("INCOMING REQUEST QUERY:", { type, id, season, ep });
 
@@ -33,9 +36,9 @@ app.get('/api/get-download', async (req, res) => {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // Step 1: Go to the main site to establish session/cookies
     await page.goto('https://vidvault.to/', { waitUntil: 'networkidle2', timeout: 30000 });
 
+    // Clean URL construction based strictly on type
     const targetUrl = type === 'tv'
       ? `https://vidvault.to/tv/${id}/${season}/${ep}`
       : `https://vidvault.to/movie/${id}`;
@@ -43,10 +46,8 @@ app.get('/api/get-download', async (req, res) => {
     console.log(`Navigating to target: ${targetUrl}`);
     await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Step 2: Execute extraction script directly inside the browser environment
     const capturedData = await page.evaluate(async (mediaId, mediaType, mediaSeason, mediaEp) => {
       try {
-        // Fetch token using browser fetch (shares cookies/session automatically)
         const tokenRes = await fetch('https://vidvault.to/api/get-token');
         const tokenJson = await tokenRes.json();
         const token = tokenJson?.t || tokenJson?.token;
@@ -59,16 +60,14 @@ app.get('/api/get-download', async (req, res) => {
           tmdbId: Number(mediaId)
         };
 
+        let refererUrl = `https://vidvault.to/movie/${mediaId}`;
+
         if (mediaType === 'tv') {
           payload.season = Number(mediaSeason);
           payload.episode = Number(mediaEp);
+          refererUrl = `https://vidvault.to/tv/${mediaId}/${mediaSeason}/${mediaEp}`;
         }
 
-        const refererUrl = mediaType === 'tv'
-          ? `https://vidvault.to/tv/${mediaId}/${mediaSeason}/${mediaEp}`
-          : `https://vidvault.to/movie/${mediaId}`;
-
-        // Call download proxy from inside the page context
         const proxyRes = await fetch('https://vidvault.to/api/download-proxy', {
           method: 'POST',
           headers: {
